@@ -1,6 +1,6 @@
 [project]
 name = "beancount-mcp"
-version = "0.1.0"
+version = "0.1.1"
 description = "Beancount Model Context Protocol Server"
 requires-python = ">=3.10"
 dependencies = [

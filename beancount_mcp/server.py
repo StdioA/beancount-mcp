@@ -264,8 +264,8 @@ async def beancount_accounts() -> str:
 async def beancount_submit_transaction(transaction: str) -> str:
     """Submit a beancount transaction to the ledger.
     Please make sure the account exists in the ledger, and the transaction date appropriate.
-    You can call tool `beancount_accounts` to list accounts from the ledger if needed.
-    You can call tool `beancount_current_date` to get current date.
+    You SHOULD call tool `beancount_accounts` to list accounts from the ledger if needed.
+    You SHOULD call tool `beancount_current_date` to get current date.
 
     Example transaction:
     ```
@@ -305,7 +305,7 @@ async def accounts() -> str:
     Example:
     ["Assets:Bank:SomeBank","Income:Salary:SomeCompany","Expenses:Groceries:SomeGroceryStore"]
     """
-    return json.dumps(list(manager.get_accounts()))
+    return json.dumps(list(manager.get_accounts()), ensure_ascii=False)
 
 
 @mcp.resource(uri="beancount://files", mime_type="application/json", name="All files from ledger")
@@ -314,7 +314,7 @@ async def files() -> str:
     Example:
     ["main.bean","txs/2024.bean"]
     """
-    return json.dumps(list(manager.resources()))
+    return json.dumps(list(manager.resources()), ensure_ascii=False)
 
 
 def init_manager(bean_file: str):
