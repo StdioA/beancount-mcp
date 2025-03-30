@@ -16,6 +16,7 @@ from beancount.core import data, getters
 from beancount.core.compare import hash_entry
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
+from beancount_mcp.entry_editor import EntryEditor
 from mcp.server.fastmcp import FastMCP
 
 
@@ -68,12 +69,15 @@ class BeancountMCPServer:
         self.entry_path = beancount_file
         self.beancount_file = Path(beancount_file).resolve()
         self.load_beancount_file()
+        self.entry_editor = EntryEditor()
         self.setup_file_watcher()
 
     def load_beancount_file(self):
         """Load the Beancount file and extract necessary data."""
         try:
-            self.entries, self.errors, self.options_map = loader.load_file(str(self.beancount_file))
+            self.entries, self.errors, self.options_map = loader.load_file(
+                str(self.beancount_file)
+            )
             self.accounts = getters.get_accounts(self.entries)
             self.last_load_time = time.time()
             if self.errors:
@@ -86,10 +90,12 @@ class BeancountMCPServer:
         """Setup a file watcher to monitor changes to the Beancount file."""
         self.observer = Observer()
         event_handler = BeancountFileHandler(self)
-        self.observer.schedule(event_handler, str(self.beancount_file.parent), recursive=True)
+        self.observer.schedule(
+            event_handler, str(self.beancount_file.parent), recursive=True
+        )
         self.observer.start()
         logging.info(f"Started file watcher for {self.beancount_file.parent}")
-    
+
     def shutdown_file_watcher(self):
         logging.info("Shutting down file watcher")
         self.observer.stop()
@@ -126,16 +132,16 @@ class BeancountMCPServer:
         # Some tricky stuff to make BQL query work
         # In case LLM wrote date with quote like `WHERE date > '2025-04-01'`
         pattern = re.compile(r'[\'"](\d{4}-\d{2}-\d{2})[\'"]')
-        query_string = re.sub(pattern, r'\1', query_string)
-        # In case LLM wrote query like SQL: `SELECT sum(position) FROM transactions` 
-        from_pattern = re.compile(r'FROM transactions?')
-        query_string = re.sub(from_pattern, '', query_string)
+        query_string = re.sub(pattern, r"\1", query_string)
+        # In case LLM wrote query like SQL: `SELECT sum(position) FROM transactions`
+        from_pattern = re.compile(r"FROM transactions?")
+        query_string = re.sub(from_pattern, "", query_string)
         try:
             types, rows = run_query(self.entries, self.options_map, query_string)
             column_names = [
                 {
                     "name": t.name,
-                    "type": f'{t.datatype.__module__}.{t.datatype.__qualname__}',
+                    "type": f"{t.datatype.__module__}.{t.datatype.__qualname__}",
                 }
                 for t in (types or [])
             ]
@@ -171,7 +177,7 @@ class BeancountMCPServer:
                     "narration": entry.narration,
                     "tags": list(entry.tags) if entry.tags else [],
                     "links": list(entry.links) if entry.links else [],
-                    "postings": []
+                    "postings": [],
                 }
 
                 for posting in entry.postings:
@@ -185,15 +191,14 @@ class BeancountMCPServer:
 
                 return {
                     "transaction": tx_dict,
-                    "location": {
-                        "filename": filename,
-                        "lineno": lineno
-                    }
+                    "location": {"filename": filename, "lineno": lineno},
                 }
 
         raise ValueError(f"Transaction with ID {tx_id} not found")
 
-    def submit_transaction(self, transaction: str, file_path: Optional[str] = None) -> None:
+    def submit_transaction(
+        self, transaction: str, file_path: Optional[str] = None
+    ) -> None:
         """Update or add a transaction.
 
         Args:
@@ -219,6 +224,28 @@ class BeancountMCPServer:
             f.write(transaction)
 
         self.load_beancount_file()
+
+    def replace_transaction(self, tx_id: str, transaction: str) -> None:
+        """Replace an existing transaction.
+
+        Args:
+            params: The parameters containing the transaction ID and new data.
+
+        Returns:
+            The result of the operation.
+        """
+        if not tx_id:
+            raise ValueError("Transaction ID is required")
+
+        for entry in self.entries:
+            if isinstance(entry, data.Transaction) and hash_entry(entry) == tx_id:
+                # Update the transaction with new data
+                old_transaction = entry
+                break
+        else:
+            raise ValueError(f"Transaction with ID {tx_id} not found")
+
+        self.entry_editor.replace_entry_with_string(old_transaction, transaction)
 
 
 manager: Optional[BeancountMCPServer] = None
@@ -301,8 +328,8 @@ async def beancount_submit_transaction(transaction: str) -> str:
     Example transaction:
     ```
     2025-01-01 * "Grocery Store" "Groceries"
-        Expenses:Groceries:SomeGroceryStore 100.00 USD
         Assets:Bank:SomeBank
+        Expenses:Groceries:SomeGroceryStore 100.00 USD
     ```
 
     Args:
@@ -315,9 +342,38 @@ async def beancount_submit_transaction(transaction: str) -> str:
         return json.dumps({"error": "Beancount manager is not initialized"})
 
     try:
-        manager.submit_transaction("\n" + transaction+"\n")
+        manager.submit_transaction("\n" + transaction + "\n")
         return json.dumps({"result": "success"}, ensure_ascii=False)
     except ValueError as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+async def beancount_replace_transaction(tx_id: str, transaction: str) -> str:
+    """Replace a beancount transaction in the ledger.
+    Please make sure the account exists in the ledger, and the transaction date appropriate.
+    You SHOULD call tool `beancount_accounts` to list accounts from the ledger if needed.
+    You SHOULD call tool `beancount_current_date` to get current date.
+
+    Example transaction:
+    ```
+    2025-01-01 * "Payee" "Narration" #optional_tag
+        Assets:Bank:SomeBank -100 EUR
+        Expenses:Groceries:SomeGroceryStore
+    ```
+
+    Args:
+        tx_id: Transaction ID
+        transaction: Beancount transaction
+    Returns:
+        Replace result
+    """
+    try:
+        manager.replace_transaction(
+            tx_id,
+            transaction,
+        )
+    except AssertionError as e:
         return json.dumps({"error": str(e)})
 
 
@@ -333,7 +389,11 @@ async def beancount_current_date() -> str:
     return str(date.today())
 
 
-@mcp.resource(uri="beancount://accounts", mime_type="application/json", name="All accounts from ledger")
+@mcp.resource(
+    uri="beancount://accounts",
+    mime_type="application/json",
+    name="All accounts from ledger",
+)
 async def accounts() -> str:
     """All accounts from beancount ledger.
     Example:
@@ -345,7 +405,9 @@ async def accounts() -> str:
     return json.dumps(list(manager.accounts), ensure_ascii=False)
 
 
-@mcp.resource(uri="beancount://files", mime_type="application/json", name="All files from ledger")
+@mcp.resource(
+    uri="beancount://files", mime_type="application/json", name="All files from ledger"
+)
 async def files() -> str:
     """All files from beancount ledger.
     Example:
@@ -355,4 +417,3 @@ async def files() -> str:
         return json.dumps({"error": "Beancount manager is not initialized"})
 
     return json.dumps(list(manager.resources), ensure_ascii=False)
-
