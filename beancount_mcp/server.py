@@ -13,6 +13,7 @@ from typing import Dict, List, Any, Optional
 from beancount import loader
 from beanquery.query import run_query
 from beancount.core import data, getters
+from beancount.core.compare import hash_entry
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from mcp.server.fastmcp import FastMCP
@@ -159,7 +160,7 @@ class BeancountMCPServer:
             raise ValueError("Transaction ID is required")
 
         for entry in self.entries:
-            if isinstance(entry, data.Transaction) and entry.meta.get("id") == tx_id:
+            if isinstance(entry, data.Transaction) and hash_entry(entry) == tx_id:
                 filename = entry.meta.get("filename")
                 lineno = entry.meta.get("lineno")
 
