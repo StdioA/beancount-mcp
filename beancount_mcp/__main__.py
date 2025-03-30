@@ -31,7 +31,6 @@ def main():
 
     args = parser.parse_args()
 
-    # 检查Beancount文件是否存在
     from beancount_mcp.server import mcp, init_manager
     init_manager(args.beancount_file)
     mcp.run(transport=args.transport)

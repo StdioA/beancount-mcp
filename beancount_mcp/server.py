@@ -7,7 +7,8 @@ import logging
 import time
 from datetime import date
 from pathlib import Path
-from typing import Dict, List, Set, Any, Optional
+import signal
+from typing import Dict, List, Any, Optional
 
 from beancount import loader
 from beanquery.query import run_query
@@ -87,7 +88,13 @@ class BeancountMCPServer:
         self.observer.schedule(event_handler, str(self.beancount_file.parent), recursive=True)
         self.observer.start()
         logging.info(f"Started file watcher for {self.beancount_file.parent}")
+    
+    def shutdown_file_watcher(self):
+        logging.info("Shutting down file watcher")
+        self.observer.stop()
+        self.observer.join()
 
+    @property
     def resources(self) -> List[str]:
         """Handle model/resources request.
 
@@ -103,7 +110,7 @@ class BeancountMCPServer:
 
         return ledger_files
 
-    def query_bql(self, query_string: str) -> Dict[str, Any]:
+    def query_bql(self, query_string: str) -> Dict[str, List[Any]]:
         """Execute a BQL query.
 
         Args:
@@ -115,8 +122,11 @@ class BeancountMCPServer:
         if not query_string:
             raise ValueError("Query parameter is required")
 
+        # Some tricky stuff to make BQL query work
+        # In case LLM wrote date with quote like `WHERE date > '2025-04-01'`
         pattern = re.compile(r'[\'"](\d{4}-\d{2}-\d{2})[\'"]')
         query_string = re.sub(pattern, r'\1', query_string)
+        # In case LLM wrote query like SQL: `SELECT sum(position) FROM transactions` 
         from_pattern = re.compile(r'FROM transactions?')
         query_string = re.sub(from_pattern, '', query_string)
         try:
@@ -126,7 +136,7 @@ class BeancountMCPServer:
                     "name": t.name,
                     "type": f'{t.datatype.__module__}.{t.datatype.__qualname__}',
                 }
-                for t in types
+                for t in (types or [])
             ]
 
             return {
@@ -136,7 +146,7 @@ class BeancountMCPServer:
         except Exception as e:
             raise ValueError(f"BQL query error: {str(e)}")
 
-    def tool_get_transaction(self, tx_id: str) -> Dict[str, Any]:
+    def get_transaction(self, tx_id: str) -> Dict[str, Any]:
         """Get transaction details by ID.
 
         Args:
@@ -182,9 +192,6 @@ class BeancountMCPServer:
 
         raise ValueError(f"Transaction with ID {tx_id} not found")
 
-    def get_accounts(self) -> Set[str]:
-        return self.accounts
-
     def submit_transaction(self, transaction: str, file_path: Optional[str] = None) -> None:
         """Update or add a transaction.
 
@@ -213,7 +220,21 @@ class BeancountMCPServer:
         self.load_beancount_file()
 
 
-manager: BeancountMCPServer = None
+manager: Optional[BeancountMCPServer] = None
+
+
+def init_manager(bean_file: str):
+    global manager
+    manager = BeancountMCPServer(bean_file)
+
+
+def signal_handler(sig, frame):
+    if manager:
+        manager.shutdown_file_watcher()
+
+
+signal.signal(signal.SIGINT, signal_handler)
+
 
 mcp = FastMCP("beancount")
 
@@ -227,6 +248,9 @@ async def beancount_query(query: str) -> str:
     Args:
         query: BQL query string
     """
+    if manager is None:
+        return json.dumps({"error": "Beancount manager is not initialized"})
+
     logging.info(f"Received BQL query: {query}")
     return json.dumps(manager.query_bql(query), ensure_ascii=False)
 
@@ -239,8 +263,11 @@ async def beancount_get_transaction(tx_id: str) -> str:
     Args:
         tx_id: Transaction ID
     """
+    if manager is None:
+        return json.dumps({"error": "Beancount manager is not initialized"})
+
     try:
-        return json.dumps(manager.tool_get_transaction(tx_id), ensure_ascii=False)
+        return json.dumps(manager.get_transaction(tx_id), ensure_ascii=False)
     except ValueError as e:
         return json.dumps({"error": str(e)})
 
@@ -254,8 +281,11 @@ async def beancount_accounts() -> str:
     Returns:
         A JSON string containing a list of accounts.
     """
+    if manager is None:
+        return json.dumps({"error": "Beancount manager is not initialized"})
+
     try:
-        return json.dumps(list(manager.get_accounts()), ensure_ascii=False)
+        return json.dumps(list(manager.accounts), ensure_ascii=False)
     except ValueError as e:
         return json.dumps({"error": str(e)})
 
@@ -280,6 +310,9 @@ async def beancount_submit_transaction(transaction: str) -> str:
     Returns:
         Submit result
     """
+    if manager is None:
+        return json.dumps({"error": "Beancount manager is not initialized"})
+
     try:
         manager.submit_transaction("\n" + transaction+"\n")
         return json.dumps({"result": "success"}, ensure_ascii=False)
@@ -305,7 +338,10 @@ async def accounts() -> str:
     Example:
     ["Assets:Bank:SomeBank","Income:Salary:SomeCompany","Expenses:Groceries:SomeGroceryStore"]
     """
-    return json.dumps(list(manager.get_accounts()), ensure_ascii=False)
+    if manager is None:
+        return json.dumps({"error": "Beancount manager is not initialized"})
+
+    return json.dumps(list(manager.accounts), ensure_ascii=False)
 
 
 @mcp.resource(uri="beancount://files", mime_type="application/json", name="All files from ledger")
@@ -314,9 +350,8 @@ async def files() -> str:
     Example:
     ["main.bean","txs/2024.bean"]
     """
-    return json.dumps(list(manager.resources()), ensure_ascii=False)
+    if manager is None:
+        return json.dumps({"error": "Beancount manager is not initialized"})
 
+    return json.dumps(list(manager.resources), ensure_ascii=False)
 
-def init_manager(bean_file: str):
-    global manager
-    manager = BeancountMCPServer(bean_file)
