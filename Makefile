@@ -6,3 +6,6 @@ package:
 
 release:
 	uvx twine upload --repository pypi dist/*
+
+lint:
+	ruff check

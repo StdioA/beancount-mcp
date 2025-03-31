@@ -1,11 +1,10 @@
 """Beancount MCP Server implementation."""
 
-import os
 import re
 import json
 import logging
 import time
-from datetime import date
+from datetime import datetime
 from pathlib import Path
 import signal
 from typing import Dict, List, Any, Optional
@@ -14,10 +13,14 @@ from beancount import loader
 from beanquery.query import run_query
 from beancount.core import data, getters
 from beancount.core.compare import hash_entry
+from beancount.parser.printer import EntryPrinter
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from beancount_mcp.entry_editor import EntryEditor
 from mcp.server.fastmcp import FastMCP
+
+
+logger = logging.getLogger(__name__)
 
 
 class BeancountFileHandler(FileSystemEventHandler):
@@ -50,11 +53,11 @@ class BeancountFileHandler(FileSystemEventHandler):
             return
 
         self.last_modified = current_time
-        logging.info(f"Detected changes in {event.src_path}, reloading...")
+        logger.info("Detected changes in %s, reloading...", event.src_path)
         try:
             self.server.load_beancount_file()
         except Exception as e:
-            logging.error(f"Error reloading Beancount file: {e}")
+            logger.error("Error reloading Beancount file: %s", e)
 
 
 class BeancountMCPServer:
@@ -71,6 +74,7 @@ class BeancountMCPServer:
         self.load_beancount_file()
         self.entry_editor = EntryEditor()
         self.setup_file_watcher()
+        self.printer = EntryPrinter()
 
     def load_beancount_file(self):
         """Load the Beancount file and extract necessary data."""
@@ -81,9 +85,9 @@ class BeancountMCPServer:
             self.accounts = getters.get_accounts(self.entries)
             self.last_load_time = time.time()
             if self.errors:
-                logging.error(f"Found {len(self.errors)} errors in the Beancount file")
+                logger.error("Found %d errors in the Beancount file", len(self.errors))
         except Exception as e:
-            logging.error(f"Error loading Beancount file: {e}")
+            logger.error("Error loading Beancount file: %s", e)
             raise
 
     def setup_file_watcher(self):
@@ -94,10 +98,10 @@ class BeancountMCPServer:
             event_handler, str(self.beancount_file.parent), recursive=True
         )
         self.observer.start()
-        logging.info(f"Started file watcher for {self.beancount_file.parent}")
+        logger.info("Started file watcher for %s", self.beancount_file.parent)
 
     def shutdown_file_watcher(self):
-        logging.info("Shutting down file watcher")
+        logger.info("Shutting down file watcher")
         self.observer.stop()
         self.observer.join()
 
@@ -119,6 +123,8 @@ class BeancountMCPServer:
 
     def query_bql(self, query_string: str) -> Dict[str, List[Any]]:
         """Execute a BQL query.
+        Example:
+        SELECT id, sum(position), account FROM OPEN ON 2024-01-01 CLOSE ON 2024-12-31 WHERE narration="lunch" AND account~"Expenses:Daily:Foods"
 
         Args:
             params: The parameters for the query.
@@ -151,7 +157,7 @@ class BeancountMCPServer:
                 "rows": [[str(c) for c in r] for r in rows[:200]],
             }
         except Exception as e:
-            raise ValueError(f"BQL query error: {str(e)}")
+            raise ValueError("BQL query error: %s", e) from e
 
     def get_transaction(self, tx_id: str) -> Dict[str, Any]:
         """Get transaction details by ID.
@@ -170,27 +176,8 @@ class BeancountMCPServer:
                 filename = entry.meta.get("filename")
                 lineno = entry.meta.get("lineno")
 
-                tx_dict = {
-                    "date": str(entry.date),
-                    "flag": entry.flag,
-                    "payee": entry.payee,
-                    "narration": entry.narration,
-                    "tags": list(entry.tags) if entry.tags else [],
-                    "links": list(entry.links) if entry.links else [],
-                    "postings": [],
-                }
-
-                for posting in entry.postings:
-                    posting_dict = {
-                        "account": posting.account,
-                        "units": str(posting.units) if posting.units else None,
-                        "cost": str(posting.cost) if posting.cost else None,
-                        "price": str(posting.price) if posting.price else None,
-                    }
-                    tx_dict["postings"].append(posting_dict)
-
                 return {
-                    "transaction": tx_dict,
+                    "transaction": self.printer(entry),
                     "location": {"filename": filename, "lineno": lineno},
                 }
 
@@ -217,10 +204,10 @@ class BeancountMCPServer:
             ledger_dir = self.beancount_file.parent
             file_path = str(ledger_dir / file_path)
 
-        if not os.path.exists(file_path):
+        if not Path.exists(file_path):
             raise ValueError(f"File {file_path} does not exist")
 
-        with open(file_path, "a") as f:
+        with Path.open(file_path, "a") as f:
             f.write(transaction)
 
         self.load_beancount_file()
@@ -279,7 +266,7 @@ async def beancount_query(query: str) -> str:
     if manager is None:
         return json.dumps({"error": "Beancount manager is not initialized"})
 
-    logging.info(f"Received BQL query: {query}")
+    logger.info("Received BQL query: %s", query)
     return json.dumps(manager.query_bql(query), ensure_ascii=False)
 
 
@@ -386,7 +373,8 @@ async def beancount_current_date() -> str:
     Returns:
         A string containing the current date.
     """
-    return str(date.today())
+    today = datetime.now().astimezone().date()
+    return str(today)
 
 
 @mcp.resource(
