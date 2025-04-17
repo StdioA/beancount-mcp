@@ -74,7 +74,7 @@ class BeancountMCPServer:
         self.load_beancount_file()
         self.entry_editor = EntryEditor()
         self.setup_file_watcher()
-        self.printer = EntryPrinter()
+        self.printer = EntryPrinter(dcontext=self.options_map.get("dcontext"))
 
     def load_beancount_file(self):
         """Load the Beancount file and extract necessary data."""
