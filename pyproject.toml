@@ -7,7 +7,7 @@ dependencies = [
     "beancount>=2.3.5",
     "watchdog>=3.0.0",
     "beanquery>=0.1.0",
-    "mcp[cli]",
+    "mcp[cli]<1.7.0",
 ]
 
 [project.scripts]

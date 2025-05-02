@@ -79,9 +79,7 @@ class BeancountMCPServer:
     def load_beancount_file(self):
         """Load the Beancount file and extract necessary data."""
         try:
-            self.entries, self.errors, self.options_map = loader.load_file(
-                str(self.beancount_file)
-            )
+            self.entries, self.errors, self.options_map = loader.load_file(self.beancount_file)
             self.accounts = getters.get_accounts(self.entries)
             self.last_load_time = time.time()
             if self.errors:
@@ -199,10 +197,10 @@ class BeancountMCPServer:
 
         # Use entrypoint file path if not provided
         if not file_path:
-            file_path = str(self.beancount_file)
+            file_path = self.beancount_file
         else:
             ledger_dir = self.beancount_file.parent
-            file_path = str(ledger_dir / file_path)
+            file_path = ledger_dir / file_path
 
         if not Path.exists(file_path):
             raise ValueError(f"File {file_path} does not exist")
@@ -332,6 +330,10 @@ async def beancount_submit_transaction(transaction: str) -> str:
         manager.submit_transaction("\n" + transaction + "\n")
         return json.dumps({"result": "success"}, ensure_ascii=False)
     except ValueError as e:
+        return json.dumps({"error": str(e)})
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
         return json.dumps({"error": str(e)})
 
 
